@@ -32,17 +32,14 @@ function enable_livecd_ntp() {
 	timedatectl set-ntp true
 }
 
-function get_password_crypto() {
-	local crypto_pass_confim=""
+function get_passphrase() {
+	local pass_confirm=""
 
 	while true; do
-		read -s -p "Enter passphrase for $root_part: " crypto_pass
-		echo
+		read -s -p "$2" $1; echo
+		read -s -p "Confirm passphrase: " pass_confirm; echo
 
-		read -s -p "Confirm passphrase: " crypto_pass_confirm
-		echo
-
-		if [[ "$crypto_pass" == "$crypto_pass_confirm" ]]; then
+		if [[ "${!1}" == "$pass_confirm" ]]; then
 			break;
 		else
 			echo "Passphrases do not match"
@@ -50,22 +47,12 @@ function get_password_crypto() {
 	done
 }
 
-function get_password_root() {
-	local root_pass_confirm=""
+function get_root_pass() {
+	get_passphrase "root_pass" "Enter root passphrase for $net_fqdn: "
+}
 
-	while true; do
-		read -s -p "Set root passphrase for $net_fqdn: " root_pass
-		echo
-
-		read -s -p "Confirm passphrase: " root_pass_confirm
-		echo
-
-		if [[ "$root_pass" == "$root_pass_confirm" ]]; then
-			break;
-		else
-			echo "Passphrases do not match"
-		fi
-	done
+function get_crypto_pass() {
+	get_passphrase "crypto_pass" "Enter crypto passphrase for $root_part: "
 }
 
 function partition_install_dev() {
@@ -117,8 +104,9 @@ function chroot_bootstrap() {
 	sed -i 's/^#ParallelDownloads.*/ParallelDownloads = 5/g' \
 		/etc/pacman.conf
 
-	pacstrap "$chroot_dir" base linux linux-firmware linux-headers \
-		neovim grub efibootmgr intel-ucode btrfs-progs dosfstools
+	pacstrap "$chroot_dir" base linux linux-firmware linux-headers	\
+		mkinitcpio neovim grub efibootmgr intel-ucode 		\
+		btrfs-progs dosfstools
 
 	genfstab -U "$chroot_dir" >> "${chroot_dir}/etc/fstab"
 }
@@ -283,31 +271,28 @@ EOF
 }
 
 function chroot_config() {
-	echo "- Chrooting inside $chroot_dir"
-	arch-chroot -- "$chroot_dir" /bin/bash -s -- << EOS
-		set -eEuo pipefail
-		trap 'echo "Error: \$BASH_COMMAND failed (\$?)"' ERR
+arch-chroot -- "$chroot_dir" /bin/bash -s -- << EOS
+	set -eEuo pipefail
+	trap 'echo "Error: \$BASH_COMMAND failed (\$?)"' ERR
 
-		$(chroot_config_time)
-		$(chroot_config_locale)
-		$(chroot_config_keymap)
-		$(chroot_config_editor)
-		$(chroot_config_hostname)
-		$(chroot_config_network)
-		$(chroot_config_resolved)
-		$(chroot_config_initcpio)
-		$(chroot_config_bootloader)
-		$(chroot_config_nouveau)
-		$(chroot_config_trim)
-		$(chroot_config_root_pass)
-
+	$(chroot_config_time)
+	$(chroot_config_locale)
+	$(chroot_config_keymap)
+	$(chroot_config_editor)
+	$(chroot_config_hostname)
+	$(chroot_config_network)
+	$(chroot_config_resolved)
+	$(chroot_config_initcpio)
+	$(chroot_config_bootloader)
+	$(chroot_config_nouveau)
+	$(chroot_config_trim)
+	$(chroot_config_root_pass)
 EOS
-
-	echo "(!) You may safely ignore unmount errors for resolv.conf"
 }
 
 function install_complete() {
 	echo "- Installation complete"
+	echo "- You may safely ignore unmount errors for resolv.conf"
 	echo "- Manual configuration can be performed by enterring:"
 	echo "arch-chroot $chroot_dir"
 	echo
@@ -319,8 +304,8 @@ function install_complete() {
 
 function main() {
 	root_check
-	get_password_crypto
-	get_password_root
+	get_root_pass
+	get_crypto_pass
 
 	enable_livecd_ntp
 

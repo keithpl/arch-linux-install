@@ -15,11 +15,11 @@ root_pass=
 chroot_dir="/mnt/arch"
 chroot_boot_dir="${chroot_dir}/boot"
 
-net_hostname="beta"
+net_hostname="alpha"
 net_domain="local.lan"
 net_fqdn="${net_hostname}.${net_domain}"
-net_iface="wlan0"
-net_iface_mtu="1500"
+net_iface="enp7s0f0"
+net_iface_mtu="9000"
 
 function get_password() {
 	while true; do

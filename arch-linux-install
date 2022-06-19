@@ -73,12 +73,32 @@ function create_filesystems() {
 }
 
 function chroot_bootstrap() {
+	local vendor_id
+	local cpu_microcode
+
+	vendor_id="$(grep vendor_id /proc/cpuinfo | head -n1 | cut -d' ' -f2)"
+
+	case "$vendor_id" in
+	"AuthenticAMD")
+		echo "- AMD CPU detected, installing AMD microcode package."
+		cpu_microcode="amd-ucode"
+		;;
+	"GenuineIntel")
+		echo "- Intel CPU detected, installing Intel microcode package."
+		cpu_microcode="intel-ucode"
+		;;
+	*)
+		echo "- Unknown CPU vendor $vendor_id."
+		echo "No CPU microcode packages will be installed."
+		cpu_microcode=""
+		;;
+	esac
+
 	echo "- Bootstrapping chroot environment: $chroot_dir"
 	sed -i '/^#ParallelDownloads/s/^#//g' /etc/pacman.conf
 
-	pacstrap "$chroot_dir" base linux linux-firmware linux-headers	\
-		mkinitcpio neovim grub efibootmgr intel-ucode 		\
-		btrfs-progs dosfstools
+	pacstrap "$chroot_dir" base linux linux-firmware mkinitcpio	\
+		neovim grub efibootmgr btrfs-progs dosfstools "$cpu_microcode"
 
 	genfstab -U "$chroot_dir" >> "${chroot_dir}/etc/fstab"
 }

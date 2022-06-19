@@ -76,6 +76,7 @@ function chroot_bootstrap() {
 	local vendor_id
 	local cpu_microcode
 
+	echo "- Bootstrapping chroot environment: $chroot_dir"
 	vendor_id="$(grep vendor_id /proc/cpuinfo | head -n1 | cut -d' ' -f2)"
 
 	case "$vendor_id" in
@@ -94,11 +95,10 @@ function chroot_bootstrap() {
 		;;
 	esac
 
-	echo "- Bootstrapping chroot environment: $chroot_dir"
 	sed -i '/^#ParallelDownloads/s/^#//g' /etc/pacman.conf
 
-	pacstrap "$chroot_dir" base linux linux-firmware mkinitcpio	\
-		neovim grub efibootmgr btrfs-progs dosfstools "$cpu_microcode"
+	pacstrap "$chroot_dir" base linux linux-firmware mkinitcpio neovim \
+		grub efibootmgr btrfs-progs dosfstools "$cpu_microcode"
 
 	genfstab -U "$chroot_dir" >> "${chroot_dir}/etc/fstab"
 }

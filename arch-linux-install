@@ -24,8 +24,8 @@ net_iface_mtu="9000"
 function get_password() {
 	while true; do
 		local pass_confirm
-		read -s -p "$2" $1; echo
-		read -s -p "Confirm password: " pass_confirm; echo
+		read -r -s -p "$2" "$1"; echo
+		read -r -s -p "Confirm password: " pass_confirm; echo
 
 		[[ "${!1}" == "$pass_confirm" ]] && break
 		echo "Passwords do not match"

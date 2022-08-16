@@ -1,72 +1,83 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -eEuo pipefail
+
 trap 'echo "Error: $BASH_COMMAND failed ($?)"' ERR
+
+root_pass=""
+crypt_pass=""
 
 install_dev="/dev/nvme0n1"
 boot_part="${install_dev}p1"
 root_part="${install_dev}p2"
 root_vol_name="root"
-root_vol="/dev/mapper/${root_vol_name}"
-
-crypto_pass=
-root_pass=
+root_vol="/dev/mapper/$root_vol_name"
 
 chroot_dir="/mnt/arch"
-chroot_boot_dir="${chroot_dir}/boot"
+chroot_boot_dir="$chroot_dir/boot"
 
-net_hostname="alpha"
+net_hostname="beta"
 net_domain="local.lan"
 net_fqdn="${net_hostname}.${net_domain}"
-net_iface="enp7s0f0"
-net_iface_mtu="9000"
+net_iface="wlan0"
+net_iface_mtu="1500"
 
-function get_password() {
+pass_confirm() {
 	while true; do
-		local pass_confirm
-		read -r -s -p "$2" "$1"; echo
-		read -r -s -p "Confirm password: " pass_confirm; echo
+		local confirm_str
 
-		[[ "${!1}" == "$pass_confirm" ]] && break
-		echo "Passwords do not match"
+		read -r -s -p "$2" "$1"; echo
+		read -r -s -p "[Confirm] $2" confirm_str; echo
+
+		if [[ "${!1}" == "$confirm_str" ]]; then
+			break
+		fi
+		echo "Passwords no not match."
 	done
 }
 
-function get_installation_passwords() {
-	get_password "root_pass" "Enter root password for $net_fqdn: "
-	get_password "crypto_pass" "Enter crypto password for $root_part: "
+pass_get() {
+	pass_confirm "root_pass" "Enter root password: "
+	pass_confirm "crypt_pass" "Enter password for encrypted root volume: "
 }
 
-function partition_install_dev() {
-	echo "- Partitioning disk: $install_dev"
-	wipefs -afq "${install_dev}"
+livecd_prepare() {
+	timedatectl set-ntp true
+	sed -i '/^#ParallelDownloads/s/^#//g' /etc/pacman.conf
+}
 
-	sfdisk --quiet -- "$install_dev" <<- 'EOF'
+part_create() {
+	echo "- Partitioning disk: $install_dev"
+
+	wipefs -afq "$install_dev"
+	sfdisk --quiet -- "$install_dev" <<- EOF
 		label:gpt
 		type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B,size=512MiB
 		type=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 	EOF
 }
 
-function encrypt_root_partition() {
-	echo "- Encrypting root partition: $root_part"
-	echo "$crypto_pass" | cryptsetup luksFormat "$root_part"
+part_encrypt() {
+	echo "- Encrypting root partion: $root_part"
+	echo "$crypt_pass" | cryptsetup luksFormat "$root_part"
 
 	echo "- Opening encrypted root volume: $root_vol"
-	echo "$crypto_pass" | cryptsetup --allow-discards 		\
-		--perf-no_read_workqueue --perf-no_write_workqueue 	\
+	echo "$crypt_pass" | cryptsetup --allow-discards		\
+		--perf-no_read_workqueue --perf-no_write_workqueue	\
 		--persistent open "$root_part" "$root_vol_name"
 
-	unset crypto_pass
+	unset crypt_pass
 }
 
-function create_filesystems() {
+part_format() {
 	echo "- Formatting boot partition: $boot_part"
 	mkfs.fat -F32 "$boot_part" > /dev/null
 
 	echo "- Formatting encrypted root volume: $root_vol"
 	mkfs.btrfs -q "$root_vol" > /dev/null
+}
 
+fs_mount() {
 	echo "- Mounting root filesystem on $root_vol to $chroot_dir"
 	mount --mkdir "$root_vol" "$chroot_dir"
 
@@ -74,83 +85,80 @@ function create_filesystems() {
 	mount --mkdir "$boot_part" "$chroot_boot_dir"
 }
 
-function chroot_bootstrap() {
+cpu_microcode() {
 	local vendor_id
-	local cpu_microcode
 
-	echo "- Bootstrapping chroot environment: $chroot_dir"
 	vendor_id="$(grep vendor_id /proc/cpuinfo | head -n1 | cut -d' ' -f2)"
 
 	case "$vendor_id" in
-	"AuthenticAMD")
-		echo "- AMD CPU detected, installing AMD microcode package."
-		cpu_microcode="amd-ucode"
-		;;
-	"GenuineIntel")
-		echo "- Intel CPU detected, installing Intel microcode package."
-		cpu_microcode="intel-ucode"
-		;;
-	*)
-		echo "- Unknown CPU vendor $vendor_id."
-		echo "- No CPU microcode packages will be installed."
-		cpu_microcode=""
-		;;
+		"AuthenticAMD") echo "amd-ucode";;
+		"GenuineIntel") echo "intel-ucode";;
+		*) echo "";;
 	esac
+}
 
-	sed -i '/^#ParallelDownloads/s/^#//g' /etc/pacman.conf
+chroot_bootstrap() {
+	local cpu_microcode
 
+	echo "- Bootstrapping chroot environment: $chroot_dir"
+
+	cpu_microcode="$(cpu_microcode)"
+
+	pacman -Sy --noconfirm archlinux-keyring
 	pacstrap "$chroot_dir" base linux linux-firmware mkinitcpio neovim \
 		grub efibootmgr btrfs-progs dosfstools "$cpu_microcode"
 
-	genfstab -U "$chroot_dir" >> "${chroot_dir}/etc/fstab"
+	genfstab -U "$chroot_dir" >> "$chroot_dir/etc/fstab"
 }
 
-function chroot_config_time() {
-cat << EOF
+chroot_config_time() {
+cat <<- EOF
 	echo "-- Configuring time"
+
 	ln -sf /usr/share/zoneinfo/America/New_York /etc/localtime
 	hwclock --systohc
-
 	systemctl --quiet enable systemd-timesyncd
 EOF
 }
 
-function chroot_config_locale() {
-cat << EOF
-	echo "-- Configuring locale"
+chroot_config_locale() {
+cat <<- EOF
+	echo "-- Configuring locale and keymap"
 	sed -i '/^#en_US/s/^#//g' /etc/locale.gen
 	sed -i '/^#ru_RU/s/^#//g' /etc/locale.gen
 	locale-gen
 
-	echo "LANG=en_US.UTF-8" > /etc/locale.conf
-	echo "KEYMAP=us" > /etc/vconsole.conf
+	echo 'LANG="en_US.UTF-8"' > /etc/locale.conf
+	echo 'KEYMAP="us"' > /etc/vconsole.conf
 EOF
 }
 
-function chroot_config_editor() {
-cat << EOF
-	echo "-- Configuring default \$EDITOR"
-	echo "EDITOR=nvim" >> /etc/environment
-	echo -e "\nexport EDITOR=nvim" >> /etc/profile
+chroot_config_editor() {
+cat <<- EOF
+	echo '-- Configuring default \$EDITOR'
+	echo 'EDITOR="nvim"' >> /etc/environment
+	printf "\n%s\n" 'export EDITOR="nvim"' >> /etc/profile
 EOF
 }
 
-function chroot_config_hostname() {
-cat << EOF
+chroot_config_hostname() {
+cat <<- EOF
 	echo "-- Configuring hostname"
 	echo "$net_hostname" > /etc/hostname
 
 	echo "-- Configuring /etc/hosts"
-	echo "127.0.0.1 localhost" >> /etc/hosts
-	echo "::1 localhost" >> /etc/hosts
-	echo "127.0.1.1 $net_fqdn $net_hostname" >> /etc/hosts
+	cat <<- EOHOSTS > /etc/hosts
+		127.0.0.1	localhost
+		::1		localhost
+		127.0.1.1	$net_fqdn	$net_hostname
+	EOHOSTS
 EOF
 }
 
-function chroot_config_network() {
-cat << EOF
+chroot_config_network() {
+cat <<- EOF
 	echo "-- Configuring network interface: $net_iface"
-	cat <<-'EOCONFIG' > /etc/systemd/network/${net_iface}.network
+	cat <<- EOCONF > /etc/systemd/network/$net_iface.network
 		[Match]
 		Name=$net_iface
 
@@ -162,15 +170,15 @@ cat << EOF
 
 		[DHCP]
 		UseDNS=yes
-	EOCONFIG
+	EOCONF
 
 	systemctl --quiet enable systemd-networkd
 	systemctl --quiet disable systemd-networkd-wait-online
 EOF
 }
 
-function chroot_config_resolved() {
-cat << EOF
+chroot_config_resolved() {
+cat <<- EOF
 	echo "-- Configuring systemd-resolved"
 	awk -i inplace '
 		/^#LLMNR=/ { \$0 = "LLMNR=no" }
@@ -183,8 +191,8 @@ cat << EOF
 EOF
 }
 
-function chroot_config_initcpio() {
-cat << EOF
+chroot_config_initcpio() {
+cat <<- EOF
 	initcpio_hooks=(
 		base
 		udev
@@ -198,7 +206,6 @@ cat << EOF
 	)
 
 	echo "-- Configuring initcpio"
-
 	awk -i inplace -v hooks="\${initcpio_hooks[*]}" '
 		/^HOOKS=/ { \$0 = "HOOKS=(" hooks ")" }
 		{ print }' /etc/mkinitcpio.conf
@@ -208,11 +215,12 @@ cat << EOF
 EOF
 }
 
-function chroot_config_bootloader() {
-cat << EOF
+chroot_config_bootloader() {
+cat <<- EOF
 	echo "-- Configuring bootloader"
+
 	root_uuid="\$(blkid $root_part -o value | head -n 1)"
-	linux_cmdline="cryptdevice=UUID=\${root_uuid}:${root_vol_name}"
+	linux_cmdline="cryptdevice=UUID=\$root_uuid:$root_vol_name"
 
 	awk -i inplace -v cmdline="\$linux_cmdline" '
 		/^GRUB_CMDLINE_LINUX_DEFAULT=/ {
@@ -228,9 +236,10 @@ cat << EOF
 			\$0 = "GRUB_TIMEOUT=2"
 		}
 		{ print }' /etc/default/grub
-	
+
 	unset linux_cmdline
 	unset root_uuid
+
 	grub-install --target=x86_64-efi --efi-directory=/boot \
 		--bootloader-id=GRUB
 
@@ -238,12 +247,12 @@ cat << EOF
 EOF
 }
 
-function chroot_config_finalize() {
-cat << EOF
+chroot_config_finalize() {
+cat <<- EOF
 	echo "-- Blacklist nouveau module"
 	echo "blacklist nouveau" > /etc/modprobe.d/nouveau.conf
 
-	echo "-- Configuring periodic TRIM"
+	echo "-- Enable periodic TRIM"
 	systemctl --quiet enable fstrim.timer
 
 	echo "-- Configuring root password"
@@ -253,9 +262,10 @@ EOF
 	unset root_pass
 }
 
-function chroot_config() {
-arch-chroot -- "$chroot_dir" /bin/bash -s -- << EOF
+chroot_config() {
+arch-chroot -- "$chroot_dir" /bin/bash -s -- <<- EOF
 	set -eEuo pipefail
+
 	trap 'echo "Error: \$BASH_COMMAND failed (\$?)"' ERR
 
 	$(chroot_config_time)
@@ -270,34 +280,22 @@ arch-chroot -- "$chroot_dir" /bin/bash -s -- << EOF
 EOF
 }
 
-function install_complete() {
-	echo "- Installation complete"
-	echo "- Manual configuration can be performed by enterring:"
-	echo "arch-chroot $chroot_dir"
-	echo
-	echo "Before rebooting, perform the following cleanup:"
-	echo "umount -R $chroot_dir"
-	echo "cryptsetup close $root_vol_name"
-	echo
-}
-
-function main() {
-	if [[ $EUID != 0 ]]; then
-		echo "This script must be run with root privileges."
+main() {
+	if [[ "$EUID" != 0 ]]; then
+		echo "This script must be ran as root!"
 		exit 1
 	fi
 
-	timedatectl set-ntp true
+	pass_get
+	livecd_prepare
 
-	get_installation_passwords
-	partition_install_dev
-	encrypt_root_partition
-	create_filesystems
+	part_create
+	part_encrypt
+	part_format
+	fs_mount
 
 	chroot_bootstrap
 	chroot_config
-
-	install_complete
 }
 
 main "$@"

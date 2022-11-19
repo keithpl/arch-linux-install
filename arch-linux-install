@@ -180,13 +180,8 @@ EOF
 chroot_config_resolved() {
 cat <<- EOF
 	echo "-- Configuring systemd-resolved"
-	awk -i inplace '
-		/^#LLMNR=/ { \$0 = "LLMNR=no" }
-		/^#DNSStubListener=/ { \$0 = "DNSStubListener=no" }
-		{ print }' /etc/systemd/resolved.conf
-
 	umount -q /etc/resolv.conf
-	ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+	ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 	systemctl --quiet enable systemd-resolved
 EOF
 }
